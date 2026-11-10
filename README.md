@@ -61,6 +61,22 @@ A detail stated once (date, payment method) is applied to every item by the mode
 
 The schema is in `expense_tracker/schema.py`. Edit the `Category` enum there to change categories.
 
+## Monthly totals and Dashboard
+
+```
+python -m expense_tracker summarize              # monthly TOTAL rows + Dashboard sheet
+python -m expense_tracker summarize --no-dashboard
+python -m expense_tracker summarize --remove     # remove the monthly TOTAL rows
+```
+
+- Each month gets a highlighted, bold row after its entries: `TOTAL (2026-11)` in column A and `=SUM(C{first}:C{last})` in column C.
+- A month with more than one currency gets one TOTAL row per currency (`SUMIF`), since adding INR to USD is meaningless.
+- The `Dashboard` sheet has spend per category (formulas), the share of the total, and a bar chart titled "Spending Breakdown by Category". It charts one currency, `EXPENSE_CURRENCY` (default INR). Other currencies are listed in a note under the table.
+- After the first `summarize`, every `add` rebuilds the TOTAL rows and the Dashboard in the same save. TOTAL rows are never sorted as data.
+- The Dashboard sheet is generated and is rebuilt each time. Do not keep your own work on it.
+- Values are calculated when the file is opened in Excel or LibreOffice. A viewer that does not calculate formulas shows empty cells.
+- Saving rewrites the workbook. Charts you added yourself to other sheets may lose some formatting.
+
 ## Sorting and duplicates
 
 - Every add re-sorts all data rows by date. Rows with the same date keep their order. Rows with no readable date go last.

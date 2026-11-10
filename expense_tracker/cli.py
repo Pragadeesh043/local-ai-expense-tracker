@@ -21,7 +21,7 @@ from .config import Settings
 from .extract import ExtractionError, extract_expenses
 from .llm import OllamaClient, OllamaError
 from .schema import Expense
-from .sheet import HEADERS, SheetError, append_expenses, read_recent
+from .sheet import HEADERS, SheetError, append_expenses, read_recent, remove_totals, summarize as write_summaries
 
 app = typer.Typer(add_completion=False, help="Local expense tracker. Ollama + Excel, fully offline.")
 console = Console()
@@ -67,7 +67,7 @@ def _process(note: str, s: Settings, client: OllamaClient, confirm: bool) -> boo
         return False
 
     try:
-        rows = append_expenses(s.xlsx_path, s.sheet_name, items, s.sort_order)
+        rows = append_expenses(s.xlsx_path, s.sheet_name, items, s.sort_order, s.default_currency)
     except SheetError as err:
         console.print(f"[red]Error:[/red] {err}")
         return False
@@ -137,6 +137,42 @@ def list_cmd(
         d = r[0].strftime("%Y-%m-%d") if hasattr(r[0], "strftime") else str(r[0])
         t.add_row(d, str(r[1]), f"{r[2]:,.2f}", str(r[3]), str(r[4]), str(r[5]))
     console.print(t)
+
+
+@app.command()
+def summarize(
+    file: Optional[Path] = typer.Option(None, "--file", "-f", help="Target .xlsx path"),
+    remove: bool = typer.Option(False, "--remove", help="Remove the monthly TOTAL rows instead"),
+    no_dashboard: bool = typer.Option(False, "--no-dashboard", help="Only write monthly TOTAL rows"),
+) -> None:
+    """Add monthly TOTAL rows and a Dashboard sheet with a category chart.
+
+    After the first run, later `add` commands keep the totals and the Dashboard up to date.
+    """
+    s = _settings(None, file)
+    try:
+        if remove:
+            remove_totals(s.xlsx_path, s.sheet_name, s.sort_order, s.default_currency)
+            console.print(f"[green]Removed[/green] monthly TOTAL rows from {s.xlsx_path}.")
+            return
+        res = write_summaries(
+            s.xlsx_path, s.sheet_name, s.sort_order, s.default_currency,
+            totals=True, dashboard=not no_dashboard,
+        )
+    except SheetError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(code=1)
+
+    if res.months == 0:
+        console.print("No dated expenses found, so no monthly totals were written.")
+    else:
+        console.print(f"[green]Wrote[/green] {res.months} monthly total row group(s) to {s.xlsx_path}.")
+    if res.dashboard_written:
+        if res.categories:
+            console.print(f"[green]Built[/green] the Dashboard sheet with a chart of {res.categories} categories.")
+        else:
+            console.print(f"Dashboard built, but there are no {s.default_currency} expenses to chart yet.")
+    console.print("Open the file in Excel to see calculated values.")
 
 
 @app.command()
