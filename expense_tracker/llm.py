@@ -51,6 +51,8 @@ class OllamaClient:
             raise OllamaError(
                 f"Ollama timed out after {self.timeout_s:.0f}s. The model may still be loading."
             ) from e
+        except httpx.HTTPError as e:  # dropped connection, protocol error, anything else from httpx
+            raise OllamaError(f"Ollama request failed: {e}") from e
 
         if r.status_code == 404:
             raise OllamaError(f"Model '{self.model}' not found. Run `ollama pull {self.model}`.")

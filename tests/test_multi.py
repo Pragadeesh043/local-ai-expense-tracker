@@ -42,21 +42,21 @@ def test_two_items_two_rows(tmp_path):
     c = FakeClient(
         {
             "expenses": [
-                item("Transport", 490, payment_method="Cash"),
-                item("Food & Dining", 330, payment_method="Cash"),
+                item("TRANSPORT", 490, payment_method="Cash"),
+                item("FOOD", 330, payment_method="Cash"),
             ]
         }
     )
     out = extract_expenses("cab 490 + lunch 330 paid via cash", S(tmp_path), client=c, today=TODAY)
     assert [(e.category, e.amount, e.payment_method) for e in out] == [
-        ("Transport", 490.0, "Cash"),
-        ("Food & Dining", 330.0, "Cash"),
+        ("TRANSPORT", 490.0, "Cash"),
+        ("FOOD", 330.0, "Cash"),
     ]
     assert all(e.raw_note == "cab 490 + lunch 330 paid via cash" for e in out)
 
 
 def test_bare_list_and_single_object_still_accepted(tmp_path):
-    c = FakeClient([item("Other", 1), item("Other", 2)], item("Other", 3))
+    c = FakeClient([item("OTHERS", 1), item("OTHERS", 2)], item("OTHERS", 3))
     assert len(extract_expenses("a 1 b 2", S(tmp_path), client=c, today=TODAY)) == 2
     assert len(extract_expenses("c 3", S(tmp_path), client=c, today=TODAY)) == 1
 
@@ -69,22 +69,22 @@ def test_empty_list_is_retried_then_fails(tmp_path):
 
 
 def test_one_bad_item_retries_whole_note(tmp_path):
-    bad = {"expenses": [item("Other", 1), item("Other", "oops")]}
-    good = {"expenses": [item("Other", 1), item("Other", 2)]}
+    bad = {"expenses": [item("OTHERS", 1), item("OTHERS", "oops")]}
+    good = {"expenses": [item("OTHERS", 1), item("OTHERS", 2)]}
     c = FakeClient(bad, good)
     out = extract_expenses("a 1 b 2", S(tmp_path), client=c, today=TODAY)
     assert [e.amount for e in out] == [1.0, 2.0]
 
 
 def test_too_many_items_rejected(tmp_path):
-    many = {"expenses": [item("Other", 1)] * (MAX_ITEMS + 1)}
+    many = {"expenses": [item("OTHERS", 1)] * (MAX_ITEMS + 1)}
     c = FakeClient(many, many, many)
     with pytest.raises(ExtractionError, match="limit"):
         extract_expenses("x", S(tmp_path), client=c, today=TODAY)
 
 
 def test_prompt_demands_one_object_per_item(tmp_path):
-    c = FakeClient({"expenses": [item("Other", 1)]})
+    c = FakeClient({"expenses": [item("OTHERS", 1)]})
     extract_expenses("x 1", S(tmp_path), client=c, today=TODAY)
     system, _, schema = c.calls[0]
     assert "TWO objects" in system and "Never add amounts together" in system
@@ -168,13 +168,13 @@ def test_model_bare_weekday_phrase_works_when_in_note():
 
 
 def test_yesterday_end_to_end_with_model_leaving_date_blank(tmp_path):
-    c = FakeClient({"expenses": [item("Food & Dining", 450, date_text="")]})
+    c = FakeClient({"expenses": [item("FOOD", 450, date_text="")]})
     [e] = extract_expenses("swiggy 450 yesterday", S(tmp_path), client=c, today=TODAY)
     assert e.date == "2026-11-08"
 
 
 def test_yesterday_end_to_end_with_model_saying_today(tmp_path):
-    c = FakeClient({"expenses": [item("Food & Dining", 450, date_text="today")]})
+    c = FakeClient({"expenses": [item("FOOD", 450, date_text="today")]})
     [e] = extract_expenses("swiggy 450 yesterday", S(tmp_path), client=c, today=TODAY)
     assert e.date == "2026-11-08"
 
@@ -183,8 +183,8 @@ def test_per_item_dates_when_note_has_two(tmp_path):
     c = FakeClient(
         {
             "expenses": [
-                item("Transport", 490, date_text="yesterday"),
-                item("Food & Dining", 330, date_text="today"),
+                item("TRANSPORT", 490, date_text="yesterday"),
+                item("FOOD", 330, date_text="today"),
             ]
         }
     )
@@ -193,7 +193,7 @@ def test_per_item_dates_when_note_has_two(tmp_path):
 
 
 def test_shared_date_applies_to_every_item_when_model_omits_it(tmp_path):
-    c = FakeClient({"expenses": [item("Transport", 490), item("Food & Dining", 330)]})
+    c = FakeClient({"expenses": [item("TRANSPORT", 490), item("FOOD", 330)]})
     out = extract_expenses("cab 490 + lunch 330 yesterday", S(tmp_path), client=c, today=TODAY)
     assert [e.date for e in out] == ["2026-11-08", "2026-11-08"]
 
@@ -202,20 +202,20 @@ def test_shared_date_applies_to_every_item_when_model_omits_it(tmp_path):
 
 
 def _exp(**kw):
-    base = dict(date="2026-11-08", category="Transport", amount=490, raw_note="n")
+    base = dict(date="2026-11-08", category="TRANSPORT", amount=490, raw_note="n")
     base.update(kw)
     return Expense(**base)
 
 
 def test_append_expenses_writes_consecutive_rows(tmp_path):
     p = tmp_path / "e.xlsx"
-    rows = append_expenses(p, "Expenses", [_exp(), _exp(category="Food & Dining", amount=330)])
+    rows = append_expenses(p, "Expenses", [_exp(), _exp(category="FOOD", amount=330)])
     assert rows == [2, 3]
     more = append_expenses(p, "Expenses", [_exp(amount=1)])
     assert more == [4]
     ws = load_workbook(p)["Expenses"]
     assert [ws.cell(r, 3).value for r in (2, 3, 4)] == [490, 330, 1]
-    assert ws["B3"].value == "Food & Dining"
+    assert ws["B3"].value == "FOOD"
 
 
 def test_append_expenses_empty_writes_nothing(tmp_path):
@@ -229,11 +229,11 @@ def test_append_expenses_empty_writes_nothing(tmp_path):
 
 def test_cli_add_multi_item(tmp_path, monkeypatch):
     p = tmp_path / "e.xlsx"
-    items = [_exp(), _exp(category="Food & Dining", amount=330, payment_method="Cash")]
+    items = [_exp(), _exp(category="FOOD", amount=330, payment_method="Cash")]
     monkeypatch.setattr(cli, "extract_expenses", lambda note, s, client=None: items)
     r = CliRunner().invoke(cli.app, ["add", "-y", "-f", str(p), "cab", "490", "+", "lunch", "330"])
     assert r.exit_code == 0, r.output
     assert "Parsed 2 expenses" in r.output
     assert "rows 2, 3" in " ".join(r.output.split())
     ws = load_workbook(p)["Expenses"]
-    assert ws.max_row == 3
+    assert ws.max_row == 4  # header, 2 data rows, 1 monthly TOTAL row

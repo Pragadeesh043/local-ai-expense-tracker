@@ -22,9 +22,9 @@ _EXAMPLE_NOTE = "cab 490 + lunch 330 paid via cash yesterday"
 _EXAMPLE_JSON = json.dumps(
     {
         "expenses": [
-            {"date_text": "yesterday", "category": "Transport", "amount": 490,
+            {"date_text": "yesterday", "category": Category.TRANSPORT.value, "amount": 490,
              "currency": "INR", "merchant": "N/A", "payment_method": "Cash"},
-            {"date_text": "yesterday", "category": "Food & Dining", "amount": 330,
+            {"date_text": "yesterday", "category": Category.FOOD.value, "amount": 330,
              "currency": "INR", "merchant": "N/A", "payment_method": "Cash"},
         ]
     }
@@ -53,11 +53,14 @@ Fields of each object:
 
 Rules:
 - Never invent a merchant, amount or payment method.
-- Swiggy, Zomato, restaurants, cafes, lunch, dinner -> Food & Dining.
-- Uber, Ola, cab, metro, petrol, auto, bus -> Transport.
-- Electricity, water, gas, internet, mobile recharge -> Utilities.
-- Vegetables, kirana, BigBasket, Blinkit, Zepto -> Groceries.
-- Netflix, Spotify, YouTube Premium, app plans -> Subscriptions.
+- Use only the categories listed above. Pick the closest one. Use OTHERS if none fits.
+- FOOD: restaurants, cafes, Swiggy, Zomato, lunch, dinner, snacks, tea or coffee out.
+- GROCERY: vegetables, fruit, milk, kirana, BigBasket, Blinkit, Zepto.
+- TRANSPORT: Uber, Ola, cab, auto, metro, bus, train, petrol, fuel, flights.
+- PARKING: parking fees.
+- ENTERTAINMENT: movies, games, concerts, Netflix, Spotify, streaming plans.
+- PERSONAL: clothes, shopping, haircut, gym, medicine, health, toiletries.
+- OTHERS: rent, bills, recharge, gifts, anything else.
 - GPay, PhonePe, Paytm -> UPI.
 
 Example
@@ -73,13 +76,13 @@ class ExtractionError(RuntimeError):
     pass
 
 
-def _coerce_items(raw: Any) -> list[dict]:
-    """Accept {"expenses": [...]}, a bare list, or a single object. Return a list of dicts."""
+def coerce_items(raw: Any, key: str = "expenses") -> list[dict]:
+    """Accept {key: [...]}, a bare list, or a single object. Return a list of dicts."""
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, dict):
-        if isinstance(raw.get("expenses"), list):
-            items = raw["expenses"]
+        if isinstance(raw.get(key), list):
+            items = raw[key]
         elif "amount" in raw:
             items = [raw]
         else:
@@ -96,7 +99,7 @@ def _coerce_items(raw: Any) -> list[dict]:
     return items
 
 
-def _count_in_note(note: str, amount: float) -> int:
+def count_in_note(note: str, amount: float) -> int:
     nums = re.findall(r"\d+(?:\.\d+)?", note.replace(",", ""))
     return sum(1 for n in nums if float(n) == amount)
 
@@ -113,7 +116,7 @@ def _drop_repeats(items: list[Expense], note: str) -> list[Expense]:
     for e in items:
         key = (e.date, e.category, e.amount, e.currency, e.merchant, e.payment_method)
         seen[key] += 1
-        if seen[key] <= max(1, _count_in_note(note, e.amount)):
+        if seen[key] <= max(1, count_in_note(note, e.amount)):
             out.append(e)
     return out
 
@@ -138,7 +141,7 @@ def extract_expenses(
         try:
             raw = client.chat_json(system, note, schema)
             out: list[Expense] = []
-            for item in _coerce_items(raw):
+            for item in coerce_items(raw):
                 p = LLMExpense.model_validate(item)
                 out.append(
                     Expense(

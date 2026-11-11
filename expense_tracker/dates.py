@@ -145,3 +145,19 @@ def resolve_item_date(model_phrase: str | None, note: str, today: date) -> date:
         if d:
             return d
     return find_date_in_note(note, today) or today
+
+
+def cell_date(v) -> date | None:
+    """Best-effort date from a spreadsheet cell value (datetime, date or ISO text). None if not a date."""
+    from datetime import datetime
+
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        try:
+            return date.fromisoformat(v.strip()[:10])
+        except ValueError:
+            return None
+    return None

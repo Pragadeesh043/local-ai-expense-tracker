@@ -13,12 +13,20 @@ from expense_tracker import cli, sheet
 from expense_tracker.config import Settings
 from expense_tracker.extract import extract_expenses
 from expense_tracker.schema import Expense
-from expense_tracker.sheet import HEADERS, append_expense, append_expenses, read_recent
+from functools import partial
+
+from expense_tracker.sheet import HEADERS, read_recent
+from expense_tracker.sheet import append_expense as _append_expense
+from expense_tracker.sheet import append_expenses as _append_expenses
+
+# These tests are about row order, so they write without monthly TOTAL rows.
+append_expense = partial(_append_expense, totals=False)
+append_expenses = partial(_append_expenses, totals=False)
 
 TODAY = date(2026, 11, 9)
 
 
-def exp(d, amount=100, cat="Other", merchant="N/A", **kw):
+def exp(d, amount=100, cat="OTHERS", merchant="N/A", **kw):
     return Expense(date=d, category=cat, amount=amount, merchant=merchant, raw_note="n", **kw)
 
 
@@ -201,29 +209,29 @@ def it(cat, amount, **kw):
 
 
 def test_model_repeating_an_item_is_collapsed(tmp_path):
-    c = FakeClient({"expenses": [it("Food & Dining", 700, merchant="Zomato"), it("Food & Dining", 700, merchant="Zomato")]})
+    c = FakeClient({"expenses": [it("FOOD", 700, merchant="Zomato"), it("FOOD", 700, merchant="Zomato")]})
     out = extract_expenses("zomato 700", S(tmp_path), client=c, today=TODAY)
     assert len(out) == 1 and out[0].amount == 700.0
 
 
 def test_real_repeats_are_kept(tmp_path):
-    c = FakeClient({"expenses": [it("Food & Dining", 50), it("Food & Dining", 50)]})
+    c = FakeClient({"expenses": [it("FOOD", 50), it("FOOD", 50)]})
     out = extract_expenses("coffee 50 + tea 50", S(tmp_path), client=c, today=TODAY)
     assert len(out) == 2
 
 
 def test_triple_from_model_but_two_in_note(tmp_path):
-    c = FakeClient({"expenses": [it("Other", 50)] * 3})
+    c = FakeClient({"expenses": [it("OTHERS", 50)] * 3})
     assert len(extract_expenses("a 50 b 50", S(tmp_path), client=c, today=TODAY)) == 2
 
 
 def test_repeat_check_handles_commas_and_decimals(tmp_path):
-    c = FakeClient({"expenses": [it("Other", 1250.5)] * 2})
+    c = FakeClient({"expenses": [it("OTHERS", 1250.5)] * 2})
     assert len(extract_expenses("rent 1,250.50", S(tmp_path), client=c, today=TODAY)) == 1
 
 
 def test_different_items_with_different_amounts_untouched(tmp_path):
-    c = FakeClient({"expenses": [it("Transport", 490), it("Food & Dining", 330)]})
+    c = FakeClient({"expenses": [it("TRANSPORT", 490), it("FOOD", 330)]})
     assert len(extract_expenses("cab 490 + lunch 330", S(tmp_path), client=c, today=TODAY)) == 2
 
 
@@ -235,11 +243,12 @@ def test_cli_writes_each_parsed_item_exactly_once(tmp_path, monkeypatch):
 
     class C:  # model that doubles its answer
         def chat_json(self, *_):
-            return {"expenses": [it("Food & Dining", 700, merchant="Zomato")] * 2}
+            return {"expenses": [it("FOOD", 700, merchant="Zomato")] * 2}
 
     monkeypatch.setattr(cli, "OllamaClient", lambda *a, **k: C())
     r = CliRunner().invoke(cli.app, ["add", "-y", "-f", str(p), "zomato", "700"])
     assert r.exit_code == 0, r.output
     assert len(calls) == 1
     ws = load_workbook(p)["Expenses"]
-    assert ws.max_row == 2  # header + one data row
+    assert ws.max_row == 3  # header, ONE data row, and its monthly TOTAL row
+    assert ws['C2'].value == 700

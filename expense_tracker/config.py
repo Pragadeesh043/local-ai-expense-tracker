@@ -17,5 +17,8 @@ class Settings:
     sheet_name: str = field(default_factory=lambda: os.getenv("EXPENSE_SHEET", "Expenses"))
     default_currency: str = field(default_factory=lambda: os.getenv("EXPENSE_CURRENCY", "INR"))
     sort_order: str = field(default_factory=lambda: os.getenv("EXPENSE_SORT", "desc"))
-    timeout_s: float =field(default_factory=lambda: float(os.getenv("EXPENSE_TIMEOUT", "120")))
+    monthly_totals: bool = field(
+        default_factory=lambda: os.getenv("EXPENSE_TOTALS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    )
+    timeout_s: float = field(default_factory=lambda: float(os.getenv("EXPENSE_TIMEOUT", "120")))
     retries: int = field(default_factory=lambda: int(os.getenv("EXPENSE_RETRIES", "2")))

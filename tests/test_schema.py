@@ -5,7 +5,7 @@ from expense_tracker.schema import Category, Expense, LLMExpense, PaymentMethod,
 
 
 def make(**kw):
-    base = dict(date="2026-11-05", category="Transport", amount=230, raw_note="x")
+    base = dict(date="2026-11-05", category="TRANSPORT", amount=230, raw_note="x")
     base.update(kw)
     return Expense(**base)
 
@@ -36,9 +36,9 @@ def test_bad_date_rejected():
 
 
 def test_category_aliases_and_fallback():
-    assert make(category="food").category == "Food & Dining"
-    assert make(category="Food and Dining").category == "Food & Dining"
-    assert make(category="totally unknown").category == "Other"
+    assert make(category="food").category == "FOOD"
+    assert make(category="Food and Dining").category == "FOOD"
+    assert make(category="totally unknown").category == "OTHERS"
 
 
 def test_payment_aliases():
@@ -72,9 +72,9 @@ def test_ollama_schema_matches_enums():
 
 def test_llm_model_rejects_missing_or_bad_amount():
     with pytest.raises(ValidationError):
-        LLMExpense(category="Other")
+        LLMExpense(category="OTHERS")
     with pytest.raises(ValueError):
-        LLMExpense(category="Other", amount="abc")
+        LLMExpense(category="OTHERS", amount="abc")
 
 
 def test_llm_model_normalizes_near_misses():

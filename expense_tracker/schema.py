@@ -9,15 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Category(str, Enum):
-    FOOD = "Food & Dining"
-    TRANSPORT = "Transport"
-    UTILITIES = "Utilities"
-    GROCERIES = "Groceries"
-    SHOPPING = "Shopping"
-    ENTERTAINMENT = "Entertainment"
-    HEALTH = "Health"
-    SUBSCRIPTIONS = "Subscriptions"
-    OTHER = "Other"
+    FOOD = "FOOD"
+    GROCERY = "GROCERY"
+    TRANSPORT = "TRANSPORT"
+    PARKING = "PARKING"
+    ENTERTAINMENT = "ENTERTAINMENT"
+    PERSONAL = "PERSONAL"
+    OTHERS = "OTHERS"
 
 
 class PaymentMethod(str, Enum):
@@ -29,21 +27,36 @@ class PaymentMethod(str, Enum):
     UNKNOWN = "Unknown"
 
 
-# Tolerant aliases so a small model's near-miss still lands on a valid enum value.
+# Maps near-misses and the labels used by earlier versions of this tool onto the 7 categories.
+# Keys are lowercase with "&" written as "and". Anything unknown becomes OTHERS.
 _CATEGORY_ALIASES = {
-    "food": Category.FOOD,
-    "dining": Category.FOOD,
     "food and dining": Category.FOOD,
+    "dining": Category.FOOD,
     "restaurant": Category.FOOD,
+    "restaurants": Category.FOOD,
+    "meal": Category.FOOD,
+    "snacks": Category.FOOD,
+    "groceries": Category.GROCERY,
+    "vegetables": Category.GROCERY,
     "travel": Category.TRANSPORT,
-    "grocery": Category.GROCERIES,
-    "bills": Category.UTILITIES,
-    "utility": Category.UTILITIES,
-    "subscription": Category.SUBSCRIPTIONS,
-    "medical": Category.HEALTH,
-    "healthcare": Category.HEALTH,
-    "misc": Category.OTHER,
-    "miscellaneous": Category.OTHER,
+    "transportation": Category.TRANSPORT,
+    "cab": Category.TRANSPORT,
+    "fuel": Category.TRANSPORT,
+    "entertainments": Category.ENTERTAINMENT,
+    "movies": Category.ENTERTAINMENT,
+    "subscriptions": Category.ENTERTAINMENT,
+    "subscription": Category.ENTERTAINMENT,
+    "shopping": Category.PERSONAL,
+    "health": Category.PERSONAL,
+    "healthcare": Category.PERSONAL,
+    "medical": Category.PERSONAL,
+    "personal care": Category.PERSONAL,
+    "utilities": Category.OTHERS,
+    "utility": Category.OTHERS,
+    "bills": Category.OTHERS,
+    "other": Category.OTHERS,
+    "misc": Category.OTHERS,
+    "miscellaneous": Category.OTHERS,
 }
 
 _PAYMENT_ALIASES = {
@@ -65,19 +78,26 @@ _PAYMENT_ALIASES = {
 }
 
 
-class _Normalized(BaseModel):
-    """Shared tolerant normalizers. Applied to both the LLM output model and the final Expense."""
+def normalize_category(v: object) -> Category:
+    """Any category-like value -> one of the 7 categories. Unknown or blank -> OTHERS."""
+    if isinstance(v, Category):
+        return v
+    if v is None:
+        return Category.OTHERS
+    key = " ".join(str(v).lower().replace("&", " and ").split())
+    for cat in Category:
+        if key == cat.value.lower():
+            return cat
+    return _CATEGORY_ALIASES.get(key, Category.OTHERS)
+
+
+class NormalizedModel(BaseModel):
+    """Shared tolerant normalizers. Each applies only to models that have that field."""
 
     @field_validator("category", mode="before", check_fields=False)
     @classmethod
     def _norm_category(cls, v: object) -> object:
-        if isinstance(v, str):
-            key = v.strip().lower().replace("&", "and")
-            for cat in Category:
-                if key == cat.value.lower().replace("&", "and"):
-                    return cat
-            return _CATEGORY_ALIASES.get(key, Category.OTHER)
-        return v
+        return normalize_category(v)
 
     @field_validator("payment_method", mode="before", check_fields=False)
     @classmethod
@@ -115,7 +135,7 @@ class _Normalized(BaseModel):
         return str(v).strip()
 
 
-class Expense(_Normalized):
+class Expense(NormalizedModel):
     model_config = ConfigDict(use_enum_values=True, extra="ignore")
 
     date: str = Field(description="ISO date YYYY-MM-DD")
@@ -136,7 +156,7 @@ class Expense(_Normalized):
         return date_cls.fromisoformat(s).isoformat()
 
 
-class LLMExpense(_Normalized):
+class LLMExpense(NormalizedModel):
     """What the model is asked to produce. Date and raw_note are handled in code, not by the LLM."""
 
     model_config = ConfigDict(extra="ignore")

@@ -37,7 +37,7 @@ def test_extract_happy_path(tmp_path):
     c = FakeClient(
         {
             "date_text": "yesterday",
-            "category": "Food & Dining",
+            "category": "FOOD",
             "amount": 450,
             "currency": "INR",
             "merchant": "Swiggy",
@@ -46,7 +46,7 @@ def test_extract_happy_path(tmp_path):
     )
     [e] = extract_expenses("swiggy 450 upi yesterday", settings(tmp_path), client=c, today=TODAY)
     assert e.date == "2026-11-04"
-    assert e.category == "Food & Dining"
+    assert e.category == "FOOD"
     assert e.amount == 450.0
     assert e.merchant == "Swiggy"
     assert e.payment_method == "UPI"
@@ -54,7 +54,7 @@ def test_extract_happy_path(tmp_path):
 
 
 def test_extract_no_date_defaults_today(tmp_path):
-    c = FakeClient({"category": "Transport", "amount": 120})
+    c = FakeClient({"category": "TRANSPORT", "amount": 120})
     [e] = extract_expenses("auto 120", settings(tmp_path), client=c, today=TODAY)
     assert e.date == "2026-11-05"
     assert e.merchant == "N/A"
@@ -62,14 +62,14 @@ def test_extract_no_date_defaults_today(tmp_path):
 
 
 def test_extract_retries_bad_output_then_succeeds(tmp_path):
-    c = FakeClient({"category": "Other"}, {"category": "Other", "amount": 9})  # first lacks amount
+    c = FakeClient({"category": "OTHERS"}, {"category": "OTHERS", "amount": 9})  # first lacks amount
     [e] = extract_expenses("thing 9", settings(tmp_path), client=c, today=TODAY)
     assert e.amount == 9.0
     assert len(c.calls) == 2
 
 
 def test_extract_gives_up_after_retries(tmp_path):
-    bad = {"category": "Other", "amount": "not a number"}
+    bad = {"category": "OTHERS", "amount": "not a number"}
     c = FakeClient(bad, bad, bad)
     with pytest.raises(ExtractionError):
         extract_expenses("x 1", settings(tmp_path), client=c, today=TODAY)
@@ -89,10 +89,10 @@ def test_extract_empty_note(tmp_path):
 
 
 def test_prompt_contains_enums_and_currency(tmp_path):
-    c = FakeClient({"category": "Other", "amount": 1})
+    c = FakeClient({"category": "OTHERS", "amount": 1})
     extract_expenses("x 1", settings(tmp_path), client=c, today=TODAY)
     system, user, schema = c.calls[0]
-    assert "Food & Dining" in system and "NetBanking" in system and "INR" in system
+    assert "FOOD" in system and "NetBanking" in system and "INR" in system
     assert user == "x 1"
     assert "properties" in schema
 
@@ -155,7 +155,7 @@ def _exp(**kw):
     from expense_tracker.schema import Expense
 
     base = dict(
-        date="2026-11-04", category="Food & Dining", amount=450, merchant="Swiggy",
+        date="2026-11-04", category="FOOD", amount=450, merchant="Swiggy",
         payment_method="UPI", raw_note="swiggy 450 upi yesterday",
     )
     base.update(kw)
@@ -165,13 +165,13 @@ def _exp(**kw):
 def test_sheet_creates_with_headers_and_appends(tmp_path):
     p = tmp_path / "new" / "e.xlsx"
     r1 = append_expense(p, "Expenses", _exp())
-    r2 = append_expense(p, "Expenses", _exp(amount=100, merchant="Uber", category="Transport"))
+    r2 = append_expense(p, "Expenses", _exp(amount=100, merchant="Uber", category="TRANSPORT"))
     assert (r1, r2) == (2, 3)
 
     ws = load_workbook(p)["Expenses"]
     assert [c.value for c in ws[1]] == HEADERS
     assert ws["A2"].value.date() == date(2026, 11, 4)
-    assert ws["B2"].value == "Food & Dining"
+    assert ws["B2"].value == "FOOD"
     assert ws["C2"].value == 450.0
     assert ws["E3"].value == "Uber"
     assert ws["A1"].font.bold is True
@@ -188,7 +188,7 @@ def test_sheet_preserves_existing_workbook(tmp_path):
     for i, h in enumerate(HEADERS, 1):
         ws.cell(1, i, h)
     ws.cell(2, 1, date(2026, 11, 1))
-    ws.cell(2, 2, "old row")
+    ws.cell(2, 5, "old row")
     other = wb.create_sheet("Budget")
     other["A1"] = "keep me"
     wb.save(p)
@@ -196,7 +196,7 @@ def test_sheet_preserves_existing_workbook(tmp_path):
     row = append_expense(p, "Expenses", _exp())  # dated 2026-11-04, newer, so it goes on top
     assert row == 2
     wb2 = load_workbook(p)
-    assert wb2["Expenses"]["B3"].value == "old row"
+    assert wb2["Expenses"]["E3"].value == "old row"
     assert wb2["Budget"]["A1"].value == "keep me"
 
 
@@ -205,11 +205,11 @@ def test_sheet_adds_missing_sheet(tmp_path):
 
     p = tmp_path / "e.xlsx"
     wb = Workbook()
-    wb.active.title = "Other"
+    wb.active.title = "OTHERS"
     wb.save(p)
     append_expense(p, "Expenses", _exp())
     wb2 = load_workbook(p)
-    assert "Other" in wb2.sheetnames and "Expenses" in wb2.sheetnames
+    assert "OTHERS" in wb2.sheetnames and "Expenses" in wb2.sheetnames
     assert wb2["Expenses"]["A1"].value == "Date"
 
 
@@ -241,3 +241,12 @@ def test_read_recent(tmp_path):
         append_expense(p, "Expenses", _exp(amount=10 + i))
     rows = read_recent(p, "Expenses", n=3)
     assert [r[2] for r in rows] == [12.0, 13.0, 14.0]
+
+
+def test_client_dropped_connection_is_a_clean_error(monkeypatch):
+    def handler(request):
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    _patch_post(monkeypatch, handler)
+    with pytest.raises(OllamaError, match="request failed"):
+        OllamaClient("http://localhost:11434", "m").chat_json("s", "u", {})
