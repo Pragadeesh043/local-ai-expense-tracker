@@ -13,10 +13,11 @@ class OllamaError(RuntimeError):
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, model: str, timeout_s: float = 120.0):
+    def __init__(self, base_url: str, model: str, timeout_s: float = 120.0, *, think: bool | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
+        self.think = think
 
     def health(self) -> list[str]:
         """Return installed model names. Raises OllamaError if the server is unreachable."""
@@ -41,6 +42,8 @@ class OllamaClient:
                 {"role": "user", "content": user},
             ],
         }
+        if self.think is not None:
+            payload["think"] = self.think
         try:
             r = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout_s)
         except httpx.ConnectError as e:

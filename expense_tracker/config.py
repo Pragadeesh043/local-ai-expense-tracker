@@ -10,7 +10,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     ollama_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
-    model: str = field(default_factory=lambda: os.getenv("EXPENSE_MODEL", "llama3.2"))
+    model: str = field(default_factory=lambda: os.getenv("EXPENSE_MODEL", "qwen2.5-coder:1.5b"))
     xlsx_path: Path = field(
         default_factory=lambda: Path(os.getenv("EXPENSE_XLSX", "expenses.xlsx")).expanduser()
     )

@@ -1,8 +1,32 @@
 # Local Expense Tracker
 
-Type an expense in plain words. A local Ollama model turns it into a structured row. The row is appended to an `.xlsx` file. Nothing leaves your machine.
+Log expenses and income in plain language using a local Ollama model. The Windows app manages the ledger and refreshes an Excel report. A command-line interface is also available.
 
-## Setup
+## Windows desktop app
+
+Run `python -m expense_tracker.desktop` from the project directory, or launch the packaged `ExpenseTracker.exe`. The desktop app uses an installed copy of Ollama and defaults to `qwen3.5:4b`. Install that model with `ollama pull qwen3.5:4b` if needed. Settings has a **Check Ollama** button. Pass `--model NAME` or set `EXPENSE_MODEL` to use another local model.
+
+- **Log** turns a plain-language note into one or more expenses and income entries. Clear notes can save automatically. Ambiguous notes open an editable review. Undo reverses the last new batch. Manual entry also works with Ollama offline.
+- **Dashboard** shows income, spending, net balance, savings rate, merchant and payment breakdowns, and monthly cash flow. Use the month and currency selectors to switch views.
+- **Transactions** lets you search, edit, and delete recorded entries.
+- **Ask** supports calculations and read-only ledger questions. Examples include “15% of 42500,” “How much did I spend on food last month?”, and “What were my five biggest UPI expenses in November?”
+
+The desktop ledger lives in `%LOCALAPPDATA%\Expense Tracker\transactions.sqlite3`. On first use from the project directory, the app imports the existing `expenses.xlsx` once. To select another original workbook, use **Import existing workbook** in Settings or pass `--import-from PATH`. The original workbook remains available. Make transaction corrections in the app.
+
+After each change, the app updates `~/Documents/Expense Tracker/expenses.xlsx`, its generated report. It contains a dashboard, filterable Expense and Income tables, and a monthly summary by currency. If Excel has it locked, transactions are still saved locally. The app retries the report update while running and at the next launch. Give the report its own file path. Use `--report PATH` to choose a different destination or `--data DIRECTORY` for a separate ledger.
+
+To build the standalone Windows executable from a Python environment with the project requirements installed:
+
+```powershell
+python -m pip install pyinstaller
+python -m PyInstaller --onefile --windowed --name ExpenseTracker launch_desktop.pyw
+```
+
+## Command line
+
+The original CLI can still be used with its own workbook.
+
+### Setup
 
 ```
 pip install -r requirements.txt
@@ -61,21 +85,15 @@ A detail stated once (date, payment method) is applied to every item by the mode
 
 The schema is in `expense_tracker/schema.py`. Edit the `Category` enum there to change categories.
 
-## Monthly totals and Dashboard
+## CLI monthly totals and dashboard
 
-```
-python -m expense_tracker summarize              # monthly TOTAL rows + Dashboard sheet
-python -m expense_tracker summarize --no-dashboard
-python -m expense_tracker summarize --remove     # remove the monthly TOTAL rows
-```
+~~~powershell
+python -m expense_tracker summarize
+~~~
 
-- Each month gets a highlighted, bold row after its entries: `TOTAL (2026-11)` in column A and `=SUM(C{first}:C{last})` in column C.
-- A month with more than one currency gets one TOTAL row per currency (`SUMIF`), since adding INR to USD is meaningless.
-- The `Dashboard` sheet has spend per category (formulas), the share of the total, and a bar chart titled "Spending Breakdown by Category". It charts one currency, `EXPENSE_CURRENCY` (default INR). Other currencies are listed in a note under the table.
-- After the first `summarize`, every `add` rebuilds the TOTAL rows and the Dashboard in the same save. TOTAL rows are never sorted as data.
-- The Dashboard sheet is generated and is rebuilt each time. Do not keep your own work on it.
-- Values are calculated when the file is opened in Excel or LibreOffice. A viewer that does not calculate formulas shows empty cells.
-- Saving rewrites the workbook. Charts you added yourself to other sheets may lose some formatting.
+The CLI rebuilds its workbook's Dashboard after each addition and when you run summarize. The Dashboard shows lifetime income, spending, and net balance, with a category table and pie chart for each month that has spending in the configured reporting currency. Excel or LibreOffice calculates the workbook formulas when you open it.
+
+The Expenses sheet has monthly TOTAL rows. A month with multiple currencies gets one total per currency. Set EXPENSE_TOTALS=0 to omit these rows. The Dashboard is regenerated on each write.
 
 ## Sorting and duplicates
 
