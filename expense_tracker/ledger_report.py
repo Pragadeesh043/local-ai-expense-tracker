@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -17,6 +18,7 @@ from .ledger import Entry, Ledger, LedgerError
 
 
 _MARKER = "_Tracker"
+_REPORT_VERSION = "2"
 _BLUE = "17344C"
 _MONEY = '#,##0.00;[Red](#,##0.00);0.00'
 
@@ -26,6 +28,40 @@ def totals(entries: list[Entry]) -> tuple[int, int]:
         sum(item.cents for item in entries if item.kind == "income"),
         sum(item.cents for item in entries if item.kind == "expense"),
     )
+
+
+@dataclass(frozen=True)
+class MonthlyBalance:
+    opening: int
+    income: int
+    spending: int
+
+    @property
+    def net_change(self) -> int:
+        return self.income - self.spending
+
+    @property
+    def closing(self) -> int:
+        return self.opening + self.net_change
+
+
+def month_groups(entries: list[Entry]) -> dict[tuple[str, str], list[Entry]]:
+    groups: dict[tuple[str, str], list[Entry]] = {}
+    for item in entries:
+        groups.setdefault((item.day[:7], item.currency), []).append(item)
+    return groups
+
+
+def monthly_balances(groups: dict[tuple[str, str], list[Entry]]) -> dict[tuple[str, str], MonthlyBalance]:
+    result: dict[tuple[str, str], MonthlyBalance] = {}
+    closing_by_currency: dict[str, int] = {}
+    for key, rows in sorted(groups.items()):
+        currency = key[1]
+        income, spending = totals(rows)
+        balance = MonthlyBalance(closing_by_currency.get(currency, 0), income, spending)
+        result[key] = balance
+        closing_by_currency[currency] = balance.closing
+    return result
 
 
 def breakdown(entries: list[Entry], field: str) -> list[tuple[str, int]]:
@@ -78,14 +114,14 @@ def _transaction_sheet(workbook: Workbook, entries: list[Entry], kind: str) -> N
     _table(sheet, kind.title() + "Ledger", headers, widths)
 
 
-def _dashboard(sheet, groups: dict[tuple[str, str], list[Entry]], currency: str, month: str) -> None:
-    currency = currency.upper()
-    entries = groups.get((month, currency), [])
-    income, spent = totals(entries)
+def _dashboard(sheet, groups: dict[tuple[str, str], list[Entry]],
+               balances: dict[tuple[str, str], MonthlyBalance], currency: str, month: str) -> None:
+    entries = groups[(month, currency)]
+    balance = balances[(month, currency)]
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "A7"
     sheet.sheet_properties.tabColor = "167C73"
-    sheet.merge_cells("A1:H1")
+    sheet.merge_cells("A1:I1")
     title = sheet["A1"]
     title.value = "Financial Dashboard"
     title.font = Font(size=22, bold=True, color="FFFFFF")
@@ -94,19 +130,20 @@ def _dashboard(sheet, groups: dict[tuple[str, str], list[Entry]], currency: str,
     sheet.row_dimensions[1].height = 36
     sheet["A2"] = f"{date.fromisoformat(month + '-01'):%B %Y}  |  {currency}"
     sheet["A2"].font = Font(bold=True, color=_BLUE)
-    for col, (label, value) in zip("ACEG", (
-        ("Income", income / 100), ("Spending", spent / 100), ("Net balance", (income - spent) / 100),
-        ("Savings rate", (income - spent) / income if income else None),
+    for col, (label, value) in zip("ACEGI", (
+        ("Opening balance", balance.opening / 100), ("Income", balance.income / 100),
+        ("Spending", balance.spending / 100), ("Closing balance", balance.closing / 100),
+        ("Savings rate", balance.net_change / balance.income if balance.income else None),
     ), strict=True):
         sheet[col + "4"] = label
         sheet[col + "4"].font = Font(bold=True, color=_BLUE)
         cell = sheet[col + "5"]
         cell.value = "—" if value is None else value
-        cell.number_format = "0.0%" if col == "G" else _MONEY
+        cell.number_format = "0.0%" if col == "I" else _MONEY
         cell.font = Font(bold=True, size=16, color="167C73" if value is None or value >= 0 else "B33238")
         cell.fill = PatternFill("solid", fgColor="E9F5F3")
     sheet.row_dimensions[5].height = 26
-    for col, width in zip("ABCDEFGH", (22, 16, 24, 16, 24, 16, 15, 16), strict=True):
+    for col, width in zip("ABCDEFGHI", (22, 16, 24, 16, 24, 16, 19, 16, 16), strict=True):
         sheet.column_dimensions[col].width = width
 
     for start, field, label in ((1, "category", "Category"), (3, "name", "Merchant"), (5, "payment", "Payment method")):
@@ -128,17 +165,17 @@ def _dashboard(sheet, groups: dict[tuple[str, str], list[Entry]], currency: str,
             chart.set_categories(Reference(sheet, min_col=1, min_row=9, max_row=8 + len(rows)))
             sheet.add_chart(chart, "A22")
 
-    history = [(key[0], *totals(group)) for key, group in sorted(groups.items()) if key[1] == currency][-12:]
-    for column, label in enumerate(("Month", "Income", "Spending"), 1):
+    history = [(key[0], value) for key, value in balances.items() if key[1] == currency][-12:]
+    for column, label in enumerate(("Month", "Income", "Spending", "Closing balance"), 1):
         sheet.cell(39, column, label).font = Font(bold=True, color=_BLUE)
-    for row, (label, received, paid) in enumerate(history, 40):
+    for row, (label, value) in enumerate(history, 40):
         sheet.cell(row, 1, label)
-        sheet.cell(row, 2, received / 100).number_format = _MONEY
-        sheet.cell(row, 3, paid / 100).number_format = _MONEY
+        for column, cents in enumerate((value.income, value.spending, value.closing), 2):
+            sheet.cell(row, column, cents / 100).number_format = _MONEY
     if history:
         chart = LineChart()
         chart.title = f"Monthly cash flow ({currency})"
-        chart.add_data(Reference(sheet, min_col=2, max_col=3, min_row=39, max_row=39 + len(history)), titles_from_data=True)
+        chart.add_data(Reference(sheet, min_col=2, max_col=4, min_row=39, max_row=39 + len(history)), titles_from_data=True)
         chart.set_categories(Reference(sheet, min_col=1, min_row=40, max_row=39 + len(history)))
         chart.width = 17
         sheet.add_chart(chart, "D22")
@@ -151,20 +188,24 @@ def make_report(entries: list[Entry], ledger_id: str, currency: str) -> Workbook
     _transaction_sheet(workbook, entries, "expense")
     _transaction_sheet(workbook, entries, "income")
     summary = workbook.create_sheet("Monthly Summary")
-    headers = ("Month", "Currency", "Income", "Spending", "Net balance", "Savings rate", "Transactions")
+    headers = ("Month", "Currency", "Opening balance", "Income", "Spending", "Net change",
+               "Closing balance", "Savings rate", "Transactions")
     _append(summary, headers)
-    groups: dict[tuple[str, str], list[Entry]] = {}
-    for item in entries:
-        groups.setdefault((item.day[:7], item.currency), []).append(item)
-    for (month, code), group in sorted(groups.items(), reverse=True):
-        income, spent = totals(group)
-        _append(summary, (month, code, income / 100, spent / 100, (income - spent) / 100,
-                          (income - spent) / income if income else None, len(group)))
-        for column in (3, 4, 5):
+    currency = currency.strip().upper()
+    current_month = date.today().isoformat()[:7]
+    groups = month_groups(entries)
+    for code in {currency, *(item.currency for item in entries)}:
+        groups.setdefault((current_month, code), [])
+    balances = monthly_balances(groups)
+    for (month, code), value in reversed(balances.items()):
+        _append(summary, (month, code, value.opening / 100, value.income / 100, value.spending / 100,
+                          value.net_change / 100, value.closing / 100,
+                          value.net_change / value.income if value.income else None, len(groups[(month, code)])))
+        for column in range(3, 8):
             summary.cell(summary.max_row, column).number_format = _MONEY
-        summary.cell(summary.max_row, 6).number_format = "0.0%"
-    _table(summary, "MonthlySummary", headers, (14, 13, 18, 18, 18, 16, 16))
-    _dashboard(dashboard, groups, currency, date.today().isoformat()[:7])
+        summary.cell(summary.max_row, 8).number_format = "0.0%"
+    _table(summary, "MonthlySummary", headers, (14, 13, 19, 18, 18, 18, 19, 16, 16))
+    _dashboard(dashboard, groups, balances, currency, current_month)
     marker = workbook.create_sheet(_MARKER)
     marker["A1"] = ledger_id
     marker.sheet_state = "veryHidden"
@@ -182,6 +223,7 @@ def sync_report(ledger: Ledger, destination: Path, currency: str, *, force: bool
                 metadata.get("destination") == str(destination)
                 and metadata.get("report_month") == date.today().isoformat()[:7]
                 and metadata.get("report_currency") == currency
+                and metadata.get("report_version") == _REPORT_VERSION
             ):
                 return False
             try:
@@ -213,6 +255,7 @@ def sync_report(ledger: Ledger, destination: Path, currency: str, *, force: bool
         db.executemany("INSERT OR REPLACE INTO metadata VALUES (?, ?)", (
             ("exported", metadata["revision"]), ("destination", str(destination)),
             ("report_month", date.today().isoformat()[:7]), ("report_currency", currency),
+            ("report_version", _REPORT_VERSION),
         ))
         return True
 

@@ -7,7 +7,7 @@ Log expenses and income in plain language using a local Ollama model. The Window
 Run `python -m expense_tracker.desktop` from the project directory, or launch the packaged `ExpenseTracker.exe`. The desktop app uses an installed copy of Ollama and defaults to `qwen3.5:4b`. Install that model with `ollama pull qwen3.5:4b` if needed. Settings has a **Check Ollama** button. Pass `--model NAME` or set `EXPENSE_MODEL` to use another local model.
 
 - **Log** turns a plain-language note into one or more expenses and income entries. Clear notes can save automatically. Ambiguous notes open an editable review. Undo reverses the last new batch. Manual entry also works with Ollama offline.
-- **Dashboard** shows income, spending, net balance, savings rate, merchant and payment breakdowns, and monthly cash flow. Use the month and currency selectors to switch views.
+- **Dashboard** shows opening balance, income, spending, closing balance, savings rate, merchant and payment breakdowns, and monthly cash flow. The previous closing balance carries into the next month as its opening balance. Use the month and currency selectors to switch views.
 - **Transactions** lets you search, edit, and delete recorded entries.
 - **Ask** supports calculations and read-only ledger questions. Examples include “15% of 42500,” “How much did I spend on food last month?”, and “What were my five biggest UPI expenses in November?”
 

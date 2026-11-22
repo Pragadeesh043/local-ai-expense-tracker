@@ -7,8 +7,8 @@ from openpyxl import Workbook, load_workbook
 
 from expense_tracker.config import Settings
 from expense_tracker.ledger import Entry, Ledger, LedgerError
-from expense_tracker.ledger_assistant import Query, calculate, parse_note, run_query
-from expense_tracker.ledger_report import sync_report
+from expense_tracker.ledger_assistant import Query, answer_question, calculate, parse_note, run_query
+from expense_tracker.ledger_report import make_report, month_groups, monthly_balances, sync_report
 
 
 def expense(name="Cab", *, cents=49000, currency="INR"):
@@ -130,3 +130,47 @@ def test_assistant_sums_one_currency_and_restricts_calculator():
         with pytest.raises(LedgerError):
             calculate(expression)
 
+
+
+def test_opening_balance_carries_forward_across_empty_months_per_currency():
+    entries = [
+        Entry("income", "2026-09-12", 50000, "INR", "Salary"),
+        expense(cents=12500),
+        Entry("income", "2026-10-01", 100000, "USD", "Freelance"),
+        Entry("income", "2026-12-05", 20000, "INR", "Salary"),
+    ]
+    groups = month_groups(entries)
+    groups[("2026-10", "INR")] = []
+    balances = monthly_balances(groups)
+    assert balances[("2026-10", "INR")].opening == balances[("2026-10", "INR")].closing == 50000
+    assert balances[("2026-10", "USD")].opening == 0
+    assert balances[("2026-11", "INR")].opening == 50000
+    assert balances[("2026-11", "INR")].closing == 37500
+    assert balances[("2026-12", "INR")].closing == 57500
+
+    report = make_report(entries, "test", "INR")
+    try:
+        rows = list(report["Monthly Summary"].values)
+        assert rows[0][2:7] == ("Opening balance", "Income", "Spending", "Net change", "Closing balance")
+        november = next(row for row in rows if row[:2] == ("2026-11", "INR"))
+        assert november[2:7] == (500, 0, 125, -125, 375)
+    finally:
+        report.close()
+
+    question = Query(action="totals", start=date(2026, 11, 1), end=date(2026, 11, 30))
+    reply = run_query(question, entries, "INR").splitlines()
+    assert "Opening balance: 500.00 INR" in reply
+    assert "Net change: -125.00 INR" in reply
+    assert "Closing balance: 375.00 INR" in reply
+    direct = answer_question("What was my closing balance in November 2026?", entries, "INR", client=None)
+    assert "Closing balance: 375.00 INR" in direct
+
+
+def test_previous_report_version_refreshes_without_transaction_change(tmp_path):
+    ledger = Ledger(tmp_path / "test.sqlite3")
+    report = tmp_path / "report.xlsx"
+    assert sync_report(ledger, report, "INR")
+    with ledger.connect() as db:
+        db.execute("DELETE FROM metadata WHERE key = 'report_version'")
+    assert sync_report(ledger, report, "INR")
+    assert not sync_report(ledger, report, "INR")

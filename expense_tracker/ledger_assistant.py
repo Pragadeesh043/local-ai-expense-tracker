@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import operator
 import re
+from calendar import month_name, monthrange
 from collections import Counter
 from datetime import date
 from decimal import Decimal, DecimalException, localcontext
@@ -210,6 +211,35 @@ def _calculation_answer(expression: str) -> str:
     return f"{expression} = {result:,.12f}".rstrip("0").rstrip(".")
 
 
+_MONTH_NAMES = {name.casefold(): index for index, name in enumerate(month_name) if index}
+_BALANCE_QUESTION = re.compile(
+    r"(?:(?:what(?:'s| is| was)|show(?: me)?)\s+)?(?:my\s+)?"
+    r"(?:(?:opening|closing|net|current|running)\s+)?balance"
+    r"(?:\s+(?:(?:in|for)\s+)?(?P<period>this month|last month|"
+    + "|".join(_MONTH_NAMES) + r")(?:\s+(?P<year>\d{4}))?)?",
+    re.I,
+)
+
+
+def _balance_query(question: str, today: date) -> Query | None:
+    match = _BALANCE_QUESTION.fullmatch(question.removesuffix("?").strip())
+    if not match:
+        return None
+    period = (match["period"] or "").lower()
+    if not period:
+        return Query(action="totals", end=today)
+    year = int(match["year"]) if match["year"] else today.year
+    if period == "last month":
+        year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    elif period == "this month":
+        month = today.month
+    else:
+        month = _MONTH_NAMES[period]
+    if year < 1900:
+        raise LedgerError("Enter a year from 1900 onward.")
+    return Query(action="totals", start=date(year, month, 1), end=date(year, month, monthrange(year, month)[1]))
+
+
 def answer_question(question: str, entries: list[Entry], currency: str, client: OllamaClient) -> str:
     question = question.strip()
     if not 1 <= len(question) <= 1500:
@@ -221,6 +251,9 @@ def answer_question(question: str, entries: list[Entry], currency: str, client: 
     if percent:
         return _calculation_answer(f"{percent[2]} * {percent[1]} / 100")
     today = date.today()
+    balance = _balance_query(question, today)
+    if balance is not None:
+        return run_query(balance, entries, currency)
     prompt = (
         f"Convert the question into one supported ledger query. Today is {today:%Y-%m-%d}. "
         f"The default currency is {currency}. All dates are inclusive. "
@@ -229,12 +262,16 @@ def answer_question(question: str, entries: list[Entry], currency: str, client: 
         "breakdown for groups, savings for a hypothetical reduction in filtered spending, "
         "and calculator for ordinary arithmetic. The calculator accepts only decimal numbers, "
         "parentheses, +, -, *, /. Use unsupported for requests outside those operations. "
-        "Set kind to expense for spending or income for earnings. "
+        "Set kind to expense for spending, income for earnings, or all for opening and closing balances. "
         "For a percentage reduction, percent is a number from 0 to 100. "
         "Omit category, payment, and name when the question gives no such filter. "
         "For single-day queries set start and end to the same date. For example, How much did I spend yesterday? is a totals query with kind expense and no category, payment, or name filter."
     )
     schema = Query.model_json_schema()
+    balance_question = bool(re.search(r"\b(?:opening|closing|net|current|running)\s+balance\b", question, re.I))
+    if balance_question:
+        schema["properties"]["action"] = {"enum": ["totals", "compare", "unsupported"]}
+        prompt += " This question is about the accumulated ledger balance. Use totals or compare with kind all."
     reduction = re.search(r"(\d+(?:\.\d+)?)\s*%", question)
     if reduction and re.search(r"\b(?:save|saving|less|reduce|reduction|cut)\b", question, re.I) and re.search(
         r"\b(?:spend|spending|expenses?|food|dining|transport|groceries|grocery|entertainment|parking)\b", question, re.I
@@ -247,6 +284,10 @@ def answer_question(question: str, entries: list[Entry], currency: str, client: 
         raise LedgerError("Ollama could not interpret the question. Try one metric and an explicit date range.") from exc
     if schema["properties"]["action"].get("const") == "savings":
         plan = plan.model_copy(update={"action": "savings", "percent": Decimal(reduction[1])})
+    if balance_question:
+        if plan.action not in {"totals", "compare"}:
+            raise LedgerError("Specify the balance period, for example: Closing balance in November 2026.")
+        plan = plan.model_copy(update={"kind": "all"})
     return run_query(plan, entries, currency)
 
 
@@ -281,6 +322,13 @@ def run_query(plan: Query, entries: list[Entry], currency: str) -> str:
     if filters:
         scope += " · " + ", ".join(value.value if hasattr(value, "value") else value for value in filters)
 
+    def opening_balance(start: date | None) -> int:
+        if start is None:
+            return 0
+        first = start.isoformat()
+        received, paid = totals([item for item in entries if item.currency == code and item.day < first])
+        return received - paid
+
     income, spent = totals(rows)
     if plan.action == "top":
         matches = sorted(rows, key=lambda item: -item.cents)[:plan.limit]
@@ -301,8 +349,12 @@ def run_query(plan: Query, entries: list[Entry], currency: str) -> str:
             current, previous, label = income, old_income, "Income"
         elif kind == "expense":
             current, previous, label = spent, old_spent, "Spending"
+        elif filters:
+            current, previous, label = income - spent, old_income - old_spent, "Net change"
         else:
-            current, previous, label = income - spent, old_income - old_spent, "Net balance"
+            current = opening_balance(plan.start) + income - spent
+            previous = opening_balance(plan.compare_start) + old_income - old_spent
+            label = "Closing balance"
         result = (
             f"{label}: {money(current)} {code}\n"
             f"{other_period}: {money(previous)} {code} ({len(other)} transactions)\n"
@@ -313,6 +365,9 @@ def run_query(plan: Query, entries: list[Entry], currency: str) -> str:
     elif kind == "expense":
         result = f"Spending: {money(spent)} {code}"
     else:
-        result = f"Income: {money(income)} {code}\nSpending: {money(spent)} {code}\nNet balance: {money(income - spent)} {code}"
+        result = f"Income: {money(income)} {code}\nSpending: {money(spent)} {code}\nNet change: {money(income - spent)} {code}"
+        if not filters:
+            opening = opening_balance(plan.start)
+            result += f"\nOpening balance: {money(opening)} {code}\nClosing balance: {money(opening + income - spent)} {code}"
     return scope + "\n\n" + (result or "No matching transactions.")
 

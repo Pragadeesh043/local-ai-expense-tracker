@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import logging
 import os
 import queue
@@ -20,16 +21,24 @@ from zipfile import BadZipFile
 from .config import Settings
 from .ledger import Entry, Ledger, LedgerError, as_cents, money
 from .ledger_assistant import answer_question, parse_note
-from .ledger_report import breakdown, sync_report, totals
+from .ledger_report import breakdown, month_groups, monthly_balances, sync_report
 from .llm import OllamaClient, OllamaError
 from .schema import Category, PaymentMethod
 
 
-_BG = "#F2F6F8"
-_INK = "#17344C"
-_TEAL = "#087E74"
-_MUTED = "#526877"
+_BG = "#EFF3F8"
+_INK = "#172C44"
+_TEAL = "#08796D"
+_MUTED = "#53677F"
 _WHITE = "#FFFFFF"
+_BORDER = "#D9E3ED"
+_NAV = "#132A43"
+_NAV_ACTIVE = "#25435D"
+_NAV_TEXT = "#B9CBDE"
+_MINT = "#72E4CE"
+_GREEN = "#08796D"
+_RED = "#AA4050"
+_BAR_COLORS = ("#08796D", "#3265A3", "#7B55A8", "#A56219")
 
 
 def _message(error: Exception) -> str:
@@ -68,13 +77,18 @@ class Desktop:
         self.code = tk.StringVar(value=self.currency)
         self.filter = tk.StringVar()
         self.auto = tk.BooleanVar(value=True)
+        self.motion = tk.BooleanVar(value=True)
+        self._chart_job: str | None = None
+        self._chart_fraction = 1.0
+        self._save_job: str | None = None
         root.title("Expense Tracker")
-        root.geometry("1030x735")
+        root.geometry("1140x760")
         root.minsize(760, 640)
         root.configure(bg=_BG)
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.report_callback_exception = self.callback_error
         self._layout()
+        root.after_idle(self.note.focus_set)
         root.after(80, self._collect)
         root.after(200, self.start)
         root.after(20_000, self._periodic)
@@ -90,62 +104,158 @@ class Desktop:
         style.configure(".", font=("Segoe UI", 10), background=_BG, foreground=_INK)
         style.configure("TFrame", background=_BG)
         style.configure("TLabel", padding=0)
-        style.configure("Title.TLabel", font=("Segoe UI", 28, "bold"), foreground=_INK)
-        style.configure("Section.TLabel", font=("Segoe UI", 17, "bold"), foreground=_INK)
+        style.configure("Section.TLabel", font=("Segoe UI", 25, "bold"), foreground=_INK)
+        style.configure("Subheading.TLabel", font=("Segoe UI", 14, "bold"), foreground=_INK)
         style.configure("Muted.TLabel", foreground=_MUTED)
-        style.configure("Card.TLabel", background=_WHITE, padding=10, foreground=_INK)
-        style.configure("Value.TLabel", background=_WHITE, padding=(10, 0, 10, 12), font=("Segoe UI", 18, "bold"))
-        style.configure("Accent.TButton", background=_TEAL, foreground=_WHITE, padding=(14, 8))
-        style.map("Accent.TButton", background=[("active", "#086A63"), ("disabled", "#BCD0CE")])
-        style.configure("TButton", padding=(9, 6))
-        style.configure("TNotebook", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(20, 9))
-        style.map("TNotebook.Tab", background=[("selected", _WHITE)])
-        style.configure("Treeview", rowheight=28, fieldbackground=_WHITE, background=_WHITE)
-        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+        style.configure("Surface.TFrame", background=_WHITE)
+        style.configure("Surface.TLabel", background=_WHITE, foreground=_INK)
+        style.configure("SurfaceMuted.TLabel", background=_WHITE, foreground=_MUTED)
+        style.configure("SurfaceHeading.TLabel", background=_WHITE, font=("Segoe UI", 13, "bold"))
+        style.configure("Surface.TCheckbutton", background=_WHITE)
+        style.map("Surface.TCheckbutton", background=[("active", "#E7F4F1")])
+        style.configure("TButton", background=_WHITE, bordercolor=_BORDER, lightcolor=_WHITE, darkcolor=_BORDER,
+                        padding=(10, 7))
+        style.map("TButton", background=[("active", "#E3ECF6")], foreground=[("disabled", "#65768A")])
+        style.configure("Accent.TButton", background=_TEAL, foreground=_WHITE, bordercolor=_TEAL,
+                        lightcolor=_TEAL, darkcolor=_TEAL, font=("Segoe UI", 10, "bold"), padding=(14, 8))
+        style.map("Accent.TButton", background=[("disabled", "#C5DBD7"), ("active", "#05675E")],
+                  foreground=[("disabled", "#345C56"), ("!disabled", _WHITE)])
+        style.configure("TNotebook", borderwidth=0, background=_BG, bordercolor=_BORDER,
+                        lightcolor=_BORDER, darkcolor=_BORDER)
+        style.configure("TNotebook.Tab", padding=(14, 8))
+        style.map("TNotebook.Tab", background=[("selected", _WHITE), ("active", "#DCE8F3")])
+        style.configure("Pages.TNotebook", padding=0, borderwidth=0, bordercolor=_BG,
+                        lightcolor=_BG, darkcolor=_BG)
+        style.layout("Pages.TNotebook.Tab", [])
+        style.configure("Treeview", rowheight=31, fieldbackground=_WHITE, background=_WHITE,
+                        borderwidth=0, bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+                        font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#E5EDF6", relief="flat", foreground=_INK,
+                        font=("Segoe UI", 10, "bold"), padding=(5, 7))
+        style.map("Treeview", background=[("selected", "#D4E8F8")], foreground=[("selected", _INK)])
+        style.map("Treeview.Heading", background=[("active", "#D8E7F4")])
+        style.configure("Horizontal.TProgressbar", troughcolor=_BORDER, background=_TEAL,
+                        lightcolor=_TEAL, darkcolor=_TEAL, borderwidth=0, thickness=3)
+        style.configure("TEntry", fieldbackground=_WHITE, padding=6)
+        style.configure("TCombobox", padding=4)
 
-        shell = ttk.Frame(self.root, padding=(24, 14))
-        shell.pack(fill="both", expand=True)
-        ttk.Label(shell, text="Expense Tracker", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(shell, textvariable=self.status, style="Muted.TLabel", wraplength=690).pack(anchor="w", pady=(0, 12))
-        self.tabs = ttk.Notebook(shell)
+        rail = tk.Frame(self.root, bg=_NAV, width=172)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+        brand = tk.Frame(rail, bg=_NAV, padx=17, pady=21)
+        brand.pack(fill="x")
+        tk.Frame(brand, width=27, height=4, bg=_MINT).pack(anchor="w", pady=(0, 8))
+        tk.Label(brand, text="Expense\nTracker", justify="left", bg=_NAV, fg=_WHITE, borderwidth=0,
+                 font=("Segoe UI", 19, "bold")).pack(anchor="w")
+        tk.Button(rail, text="Open Excel report", command=self.open_report, anchor="w",
+                  bg=_NAV, fg=_NAV_TEXT, activebackground=_NAV_ACTIVE, activeforeground=_WHITE,
+                  relief="flat", borderwidth=0, padx=15, pady=10, cursor="hand2").pack(
+                      side="bottom", fill="x", padx=8, pady=(7, 15))
+
+        shell = ttk.Frame(self.root, padding=(22, 14, 22, 10))
+        shell.pack(side="left", fill="both", expand=True)
+        self.tabs = ttk.Notebook(shell, style="Pages.TNotebook", takefocus=False)
         self.tabs.pack(fill="both", expand=True)
-        for name, build in (
+        self.nav_buttons: list[tk.Button] = []
+        nav = tk.Frame(rail, bg=_NAV)
+        nav.pack(fill="x", padx=8, pady=(7, 0))
+        for index, (name, build) in enumerate((
             ("Log", self._log_tab), ("Dashboard", self._dash_tab),
             ("Transactions", self._history_tab), ("Ask", self._ask_tab), ("Settings", self._settings_tab),
-        ):
-            page = ttk.Frame(self.tabs, padding=(12, 12))
+        )):
+            page = ttk.Frame(self.tabs, padding=(1, 8, 1, 8))
             self.tabs.add(page, text=name)
             build(page)
+            button = tk.Button(
+                nav, text=name, command=partial(self.show_page, index), anchor="w", bg=_NAV, fg=_NAV_TEXT,
+                activebackground=_NAV_ACTIVE, activeforeground=_WHITE, relief="flat", borderwidth=0,
+                padx=16, pady=10, cursor="hand2", font=("Segoe UI", 10, "bold"),
+                highlightthickness=1, highlightbackground=_NAV, highlightcolor=_MINT,
+            )
+            button.pack(fill="x", pady=2)
+            self.nav_buttons.append(button)
+        self.tabs.bind("<<NotebookTabChanged>>", self._page_changed)
+        self._page_changed()
+
         footer = ttk.Frame(shell)
-        footer.pack(fill="x", pady=(9, 0))
-        ttk.Label(footer, textvariable=self.excel, style="Muted.TLabel", wraplength=570).pack(side="left")
-        ttk.Button(footer, text="Open Excel report", command=self.open_report).pack(side="right")
+        footer.pack(side="bottom", fill="x", before=self.tabs, pady=(4, 0))
+        track = ttk.Frame(footer, height=4)
+        track.pack(fill="x", pady=(0, 8))
+        track.pack_propagate(False)
+        self.progress = ttk.Progressbar(track, mode="indeterminate")
+        self.progress.pack(fill="both", expand=True)
+        status_row = ttk.Frame(footer)
+        status_row.pack(fill="x")
+        status_row.columnconfigure(0, weight=1)
+        status_row.columnconfigure(1, weight=1)
+        ttk.Label(status_row, textvariable=self.status, style="Muted.TLabel", wraplength=345).grid(row=0, column=0, sticky="w")
+        ttk.Label(status_row, textvariable=self.excel, style="Muted.TLabel", wraplength=300, justify="right").grid(
+            row=0, column=1, sticky="e", padx=(12, 0))
+
+    def show_page(self, index: int) -> None:
+        self.tabs.select(index)
+        if index == 0:
+            self.note.focus_set()
+        elif index == 3:
+            self.question.focus_set()
+
+    def _page_changed(self, _event=None) -> None:
+        selected = self.tabs.index("current")
+        for index, button in enumerate(self.nav_buttons):
+            active = index == selected
+            button.configure(bg=_NAV_ACTIVE if active else _NAV, fg=_WHITE if active else _NAV_TEXT,
+                             highlightbackground=_NAV_ACTIVE if active else _NAV)
+        self.animate_spending()
+
+    def _animate_loading(self, running: bool) -> None:
+        self.progress.stop()
+        if running and self.motion.get():
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(15)
+        else:
+            self.progress.configure(value=45 if running else 0, mode="determinate")
+
+    def _motion_changed(self) -> None:
+        self._animate_loading(self.busy)
+        self.animate_spending()
+
+    @staticmethod
+    def _surface(parent, *, padding=(15, 12)) -> ttk.Frame:
+        border = tk.Frame(parent, bg=_BORDER, padx=1, pady=1)
+        border.pack(fill="x", pady=(0, 12))
+        panel = ttk.Frame(border, style="Surface.TFrame", padding=padding)
+        panel.pack(fill="both", expand=True)
+        return panel
 
     @staticmethod
     def _text(parent, height: int, *, readonly: bool = False) -> tk.Text:
-        widget = tk.Text(parent, height=height, font=("Segoe UI", 11), relief="solid", bd=1,
-                         padx=10, pady=8, wrap="word", bg=_WHITE, fg=_INK, insertbackground=_INK, undo=True)
+        widget = tk.Text(parent, height=height, font=("Segoe UI", 11), relief="flat", bd=0, highlightthickness=1, highlightbackground=_BORDER,
+                         highlightcolor=_TEAL, padx=12, pady=10, wrap="word", bg=_WHITE, fg=_INK,
+                         insertbackground=_INK, selectbackground="#D4E8F8", selectforeground=_INK, undo=True)
         if readonly:
             widget.configure(state="disabled")
         return widget
 
     def _log_tab(self, page) -> None:
-        ttk.Label(page, text="Log transactions", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Example: salary 75000 today + cab 490 UPI yesterday",
-                  style="Muted.TLabel", wraplength=640).pack(anchor="w", pady=(3, 8))
-        self.note = self._text(page, 5)
+        ttk.Label(page, text="Log transactions", style="Section.TLabel").pack(anchor="w", pady=(0, 13))
+        composer = self._surface(page)
+        ttk.Label(composer, text="Transaction note", style="SurfaceHeading.TLabel").pack(anchor="w")
+        ttk.Label(composer, text="Example: salary 75000 today + cab 490 UPI yesterday",
+                  style="SurfaceMuted.TLabel", wraplength=460).pack(anchor="w", pady=(3, 9))
+        self.note = self._text(composer, 4)
         self.note.pack(fill="x")
         self.note.bind("<Control-Return>", lambda _event: (self.log(), "break")[1])
-        actions = ttk.Frame(page)
-        actions.pack(fill="x", pady=(9, 16))
+        actions = ttk.Frame(composer, style="Surface.TFrame")
+        actions.pack(fill="x", pady=(10, 8))
         self.log_button = ttk.Button(actions, text="Log note", style="Accent.TButton", command=self.log)
         self.log_button.pack(side="left")
         ttk.Button(actions, text="Manual entry", command=self.manual).pack(side="left", padx=6)
         self.undo_button = ttk.Button(actions, text="Undo last save", command=self.undo, state="disabled")
         self.undo_button.pack(side="left")
-        ttk.Checkbutton(actions, text="Automatically save verified notes", variable=self.auto).pack(side="right")
-        ttk.Label(page, text="Recent transactions", style="Section.TLabel").pack(anchor="w", pady=(0, 5))
+        ttk.Label(actions, text="Ctrl+Enter", style="SurfaceMuted.TLabel").pack(side="right", padx=3)
+        ttk.Checkbutton(composer, text="Automatically save verified notes", variable=self.auto,
+                        style="Surface.TCheckbutton").pack(anchor="w")
+        ttk.Label(page, text="Recent transactions", style="Subheading.TLabel").pack(anchor="w", pady=(1, 6))
         self.recent = self._tree(page, ("Date", "Type", "Merchant / Source", "Amount"), (100, 82, 210, 125), 5)
 
     def _dash_tab(self, page) -> None:
@@ -160,15 +270,53 @@ class Desktop:
         self.months.bind("<<ComboboxSelected>>", self.refresh_dashboard)
 
         cards = ttk.Frame(page)
-        cards.pack(fill="x", pady=(0, 12))
-        self.cards = [tk.StringVar() for _ in range(4)]
-        for i, (label, value) in enumerate(zip(("Income", "Spending", "Net balance", "Savings rate"), self.cards)):
+        cards.pack(fill="x", pady=(3, 13))
+        labels = ("Opening balance", "Income", "Spending", "Closing balance", "Savings rate")
+        self.cards = [tk.StringVar() for _ in labels]
+        self.card_values: list[tk.Label] = []
+        panels: list[tuple[tk.Frame, tk.Label]] = []
+        accents = ("#58789B", _GREEN, _RED, _MINT, "#68499B")
+        for i, (label, value, accent) in enumerate(zip(labels, self.cards, accents, strict=True)):
+            primary = label == "Closing balance"
+            background = _NAV if primary else _WHITE
             cards.columnconfigure(i, weight=1, uniform="cards")
-            ttk.Label(cards, text=label, style="Card.TLabel").grid(row=0, column=i, sticky="ew", padx=3)
-            ttk.Label(cards, textvariable=value, style="Value.TLabel").grid(row=1, column=i, sticky="ew", padx=3)
+            frame = tk.Frame(cards, bg=background, highlightbackground=_NAV if primary else _BORDER, highlightthickness=1)
+            frame.grid(row=0, column=i, sticky="nsew", padx=(0, 7) if i < len(labels) - 1 else 0)
+            tk.Frame(frame, height=3, bg=accent).pack(fill="x")
+            caption = tk.Label(frame, text=label, bg=background, fg=_NAV_TEXT if primary else _MUTED,
+                               anchor="w", font=("Segoe UI", 9, "bold"))
+            caption.pack(fill="x", padx=9, pady=(8, 1))
+            panels.append((frame, caption))
+            figure = tk.Label(frame, textvariable=value, bg=background, fg=_WHITE if primary else _INK,
+                              anchor="w", font=("Segoe UI", 14, "bold"))
+            figure.pack(fill="x", padx=9, pady=(0, 10))
+            self.card_values.append(figure)
+
+        current_columns = len(panels)
+
+        def arrange_cards(event) -> None:
+            nonlocal current_columns
+            columns = 3 if event.width < 760 else len(panels)
+            if columns == current_columns:
+                return
+            current_columns = columns
+            compact = columns == 3
+            self.spending_chart.configure(height=99 if compact else 143)
+            for index, (frame, caption) in enumerate(panels):
+                row, column = divmod(index, columns)
+                cards.columnconfigure(index, weight=int(index < columns), uniform="cards" if index < columns else "")
+                frame.grid_configure(row=row, column=column, pady=(0, 5) if compact else 0,
+                                     padx=0 if column == columns - 1 else (0, 7))
+                caption.pack_configure(pady=(4 if compact else 8, 1))
+                figure = self.card_values[index]
+                figure.configure(font=("Segoe UI", 12 if compact else 14, "bold"))
+                figure.pack_configure(pady=(0, 5 if compact else 10))
+
+        cards.bind("<Configure>", arrange_cards)
         self.chart_data: list[tuple[str, int]] = []
-        self.spending_chart = tk.Canvas(page, height=118, bg=_WHITE, highlightthickness=0)
-        self.spending_chart.pack(fill="x", pady=(0, 10))
+        chart = self._surface(page, padding=(15, 7))
+        self.spending_chart = tk.Canvas(chart, height=143, bg=_WHITE, highlightthickness=0)
+        self.spending_chart.pack(fill="x")
         self.spending_chart.bind("<Configure>", lambda _event: self.draw_spending())
         self.details = ttk.Notebook(page)
         self.details.pack(fill="both", expand=True)
@@ -179,7 +327,8 @@ class Desktop:
             self.breakdowns[field] = self._tree(frame, (label, "Spent", "Share"), (220, 120, 90), 7)
         trend = ttk.Frame(self.details, padding=(6, 8))
         self.details.add(trend, text="Cash flow")
-        self.trend = self._tree(trend, ("Month", "Income", "Spending", "Net balance"), (130, 125, 125, 125), 7)
+        self.trend = self._tree(trend, ("Month", "Opening balance", "Income", "Spending", "Closing balance"),
+                                (110, 125, 120, 120, 125), 7)
 
     def _history_tab(self, page) -> None:
         ttk.Label(page, text="Transactions", style="Section.TLabel").pack(anchor="w")
@@ -198,31 +347,38 @@ class Desktop:
         self.filter.trace_add("write", lambda *_: self.refresh_history())
 
     def _ask_tab(self, page) -> None:
-        ttk.Label(page, text="Ask about your money", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Try “How much did I spend on food last month?” or “15% of 42500”.",
-                  style="Muted.TLabel", wraplength=640).pack(anchor="w", pady=(3, 8))
-        self.question = self._text(page, 3)
+        ttk.Label(page, text="Ask about your money", style="Section.TLabel").pack(anchor="w", pady=(0, 13))
+        composer = self._surface(page)
+        ttk.Label(composer, text="Your question", style="SurfaceHeading.TLabel").pack(anchor="w")
+        ttk.Label(composer, text="Try “How much did I spend on food last month?” or “15% of 42500”.",
+                  style="SurfaceMuted.TLabel", wraplength=485).pack(anchor="w", pady=(3, 9))
+        self.question = self._text(composer, 3)
         self.question.pack(fill="x")
         self.question.bind("<Control-Return>", lambda _event: (self.ask(), "break")[1])
-        ttk.Button(page, text="Ask", style="Accent.TButton", command=self.ask).pack(anchor="w", pady=8)
+        ttk.Button(composer, text="Ask", style="Accent.TButton", command=self.ask).pack(anchor="w", pady=(9, 0))
+        ttk.Label(page, text="Answer", style="Subheading.TLabel").pack(anchor="w", pady=(0, 6))
         self.answer = self._text(page, 11, readonly=True)
         self.answer.pack(fill="both", expand=True)
 
     def _settings_tab(self, page) -> None:
-        ttk.Label(page, text="Local setup", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(page, text="Settings", style="Section.TLabel").pack(anchor="w", pady=(0, 13))
+        connection = self._surface(page)
+        ttk.Label(connection, text="Local setup", style="SurfaceHeading.TLabel").pack(anchor="w", pady=(0, 5))
         for label, value in (
             ("Ollama model", self.settings.model), ("Ollama endpoint", self.settings.ollama_url),
             ("Data folder", str(self.data)), ("Excel report", str(self.report)),
         ):
-            row = ttk.Frame(page)
-            row.pack(fill="x", pady=6)
-            ttk.Label(row, text=label, width=16).pack(side="left", anchor="n")
-            ttk.Label(row, text=value, wraplength=570).pack(side="left", fill="x")
-        row = ttk.Frame(page)
-        row.pack(fill="x", pady=12)
+            row = ttk.Frame(connection, style="Surface.TFrame")
+            row.pack(fill="x", pady=5)
+            ttk.Label(row, text=label, width=16, style="SurfaceMuted.TLabel").pack(side="left", anchor="n")
+            ttk.Label(row, text=value, style="Surface.TLabel", wraplength=375).pack(side="left", fill="x")
+        row = ttk.Frame(connection, style="Surface.TFrame")
+        row.pack(fill="x", pady=(9, 0))
         ttk.Button(row, text="Check Ollama", command=self.check_model).pack(side="left")
         ttk.Button(row, text="Import existing workbook", command=self.choose_import).pack(side="left", padx=8)
         ttk.Button(row, text="Retry Excel update", command=lambda: self.export(force=True)).pack(side="left")
+        ttk.Checkbutton(page, text="Animate charts and activity", variable=self.motion,
+                        command=self._motion_changed).pack(anchor="w", pady=4)
 
     @staticmethod
     def _tree(parent, columns, widths, height) -> ttk.Treeview:
@@ -232,8 +388,13 @@ class Desktop:
         scroll = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scroll.set)
         for col, width in zip(columns, widths, strict=True):
-            tree.heading(col, text=col, anchor="w")
-            tree.column(col, width=width, minwidth=58)
+            anchor = "e" if col in {
+                "Amount", "Spent", "Share", "Income", "Spending", "Opening balance", "Closing balance",
+            } else "w"
+            tree.heading(col, text=col, anchor=anchor)
+            tree.column(col, width=width, minwidth=52, anchor=anchor)
+        tree.tag_configure("alternate", background="#F5F8FC")
+        tree.tag_configure("saved", background="#DFF5EB")
         scroll.pack(side="right", fill="y")
         tree.pack(side="left", fill="both", expand=True)
         return tree
@@ -257,6 +418,7 @@ class Desktop:
         if self.busy:
             return False
         self.busy = True
+        self._animate_loading(True)
         self.status.set(label)
 
         def execute():
@@ -276,6 +438,7 @@ class Desktop:
             self.root.after(80, self._collect)
             return
         self.busy = False
+        self._animate_loading(False)
         try:
             if error is None:
                 done(value)
@@ -322,17 +485,17 @@ class Desktop:
         self.refresh_history()
         self.refresh_dashboard()
         self.recent.delete(*self.recent.get_children())
-        for item in entries[:7]:
-            self.recent.insert("", "end", values=(item.day, item.kind.title(), item.name,
-                                                  f"{money(item.cents)} {item.currency}"))
+        for index, item in enumerate(entries[:7]):
+            self.recent.insert("", "end", iid=str(item.id), tags=("alternate",) if index % 2 else (),
+                               values=(item.day, item.kind.title(), item.name, f"{money(item.cents)} {item.currency}"))
 
     def refresh_history(self) -> None:
         query = self.filter.get().strip().casefold()
         self.history.delete(*self.history.get_children())
-        for item in self.entries:
+        for index, item in enumerate(self.entries):
             searchable = " ".join((item.day, item.kind, item.name, item.category, item.payment, item.note, item.currency))
             if query in searchable.casefold():
-                self.history.insert("", "end", iid=str(item.id), values=(
+                self.history.insert("", "end", iid=str(item.id), tags=("alternate",) if index % 2 else (), values=(
                     item.day, item.kind.title(), item.name, item.category, item.payment,
                     f"{money(item.cents)} {item.currency}",
                 ))
@@ -343,42 +506,82 @@ class Desktop:
         self.codes["values"] = sorted({self.currency, *(item.currency for item in self.entries)})
         currency = self.code.get()
         month = self.month.get()
-        rows = [item for item in self.entries if item.currency == currency and item.day.startswith(month)]
-        income, spent = totals(rows)
-        values = [f"{money(cents)} {currency}" for cents in (income, spent, income - spent)]
-        values.append(f"{(income - spent) / income:.1%}" if income else "—")
-        for var, value in zip(self.cards, values, strict=True):
+        groups = month_groups([item for item in self.entries if item.currency == currency])
+        rows = groups.setdefault((month, currency), [])
+        balances = monthly_balances(groups)
+        balance = balances[(month, currency)]
+        values = [f"{money(cents)} {currency}" for cents in (balance.opening, balance.income, balance.spending, balance.closing)]
+        values.append(f"{balance.net_change / balance.income:.1%}" if balance.income else "—")
+        for var, value, widget, accent in zip(self.cards, values, self.card_values,
+                                              (_INK, _GREEN, _RED, _WHITE, "#68499B"), strict=True):
             var.set(value)
+            negative = value.startswith("-")
+            widget.configure(fg=("#FFC2CA" if accent == _WHITE else _RED) if negative else accent)
         for field, tree in self.breakdowns.items():
             tree.delete(*tree.get_children())
             for label, cents in breakdown(rows, field):
-                tree.insert("", "end", values=(label, money(cents), f"{cents / spent:.1%}"))
-        self.chart_data = breakdown(rows, "category")[:3]
-        self.draw_spending()
+                tree.insert("", "end", values=(label, money(cents), f"{cents / balance.spending:.1%}"))
+        self.chart_data = breakdown(rows, "category")[:4]
+        self.animate_spending()
         self.trend.delete(*self.trend.get_children())
-        groups: dict[str, list[Entry]] = {}
-        for entry in self.entries:
-            if entry.currency == currency:
-                groups.setdefault(entry.day[:7], []).append(entry)
-        for key, items in sorted(groups.items(), reverse=True):
-            received, paid = totals(items)
-            self.trend.insert("", "end", values=(key, money(received), money(paid), money(received - paid)))
+        for (key, _), value in reversed(balances.items()):
+            self.trend.insert("", "end", values=(key, money(value.opening), money(value.income),
+                                                 money(value.spending), money(value.closing)))
+
+    def animate_spending(self) -> None:
+        if self._chart_job:
+            self.root.after_cancel(self._chart_job)
+            self._chart_job = None
+        if not self.motion.get() or not self.chart_data or self.tabs.index("current") != 1:
+            self._chart_fraction = 1.0
+            self.draw_spending()
+            return
+
+        def frame(step: int) -> None:
+            self._chart_job = None
+            self._chart_fraction = 1 - (1 - step / 12) ** 3
+            self.draw_spending()
+            if step < 12:
+                self._chart_job = self.root.after(16, frame, step + 1)
+
+        frame(0)
 
     def draw_spending(self) -> None:
         canvas = self.spending_chart
         canvas.delete("all")
-        canvas.create_text(12, 16, text="Top spending categories", anchor="w", fill=_INK, font=("Segoe UI", 10, "bold"))
+        compact = int(canvas.cget("height")) < 110
+        canvas.create_text(0, 13 if compact else 16, text="Top spending categories", anchor="w", fill=_INK,
+                           font=("Segoe UI", 10 if compact else 12, "bold"))
         if not self.chart_data:
-            canvas.create_text(12, 47, text="No spending in this period.", anchor="w", fill=_MUTED, font=("Segoe UI", 10))
+            canvas.create_text(0, 51, text="No spending in this period.", anchor="w", fill=_MUTED, font=("Segoe UI", 10))
             return
-        width = max(20, canvas.winfo_width() - 245)
+        width = canvas.winfo_width()
+        start, finish = 121, max(141, width - 113)
         peak = self.chart_data[0][1]
-        for index, (label, cents) in enumerate(self.chart_data):
-            y = 42 + 28 * index
-            canvas.create_text(12, y, text=label.title(), anchor="w", fill=_INK, font=("Segoe UI", 9))
-            canvas.create_rectangle(110, y - 5, 110 + width, y + 5, fill="#E3EEED", outline="")
-            canvas.create_rectangle(110, y - 5, 110 + max(2, width * cents / peak), y + 5, fill=_TEAL, outline="")
-            canvas.create_text(123 + width, y, text=money(cents), anchor="w", fill=_INK, font=("Segoe UI", 9))
+        for index, ((label, cents), color) in enumerate(zip(self.chart_data, _BAR_COLORS)):
+            y = 35 + 18 * index if compact else 47 + 26 * index
+            canvas.create_text(0, y, text=label.title(), anchor="w", fill=_INK, font=("Segoe UI", 9, "bold"))
+            canvas.create_line(start, y, finish, y, fill="#E6EDF6", width=8, capstyle="round")
+            length = (finish - start) * cents / peak * self._chart_fraction
+            if length:
+                canvas.create_line(start, y, start + length, y, fill=color, width=8, capstyle="round")
+            canvas.create_text(width - 1, y, text=money(cents), anchor="e", fill=_INK, font=("Segoe UI", 9))
+
+    def highlight_saved(self, ids: list[int]) -> None:
+        if self._save_job:
+            self.root.after_cancel(self._save_job)
+        selected = set(map(str, ids))
+        rows = self.recent.get_children()
+        for index, row in enumerate(rows):
+            tags = ("saved",) if self.motion.get() and row in selected else ("alternate",) if index % 2 else ()
+            self.recent.item(row, tags=tags)
+
+        def reset() -> None:
+            self._save_job = None
+            for index, row in enumerate(self.recent.get_children()):
+                self.recent.item(row, tags=("alternate",) if index % 2 else ())
+
+        self._save_job = self.root.after(1350, reset) if self.motion.get() else None
 
     def reload(self) -> None:
         if self.ledger:
@@ -405,13 +608,15 @@ class Desktop:
             self.undo_button.configure(state="normal")
             if original is not None and self.note.get("1.0", "end-1c") == original:
                 self.note.delete("1.0", "end")
-            self._changed(f"Saved {len(ids)} {'entry' if len(ids) == 1 else 'entries'}. Undo is available.")
+            self._changed(f"Saved {len(ids)} {'entry' if len(ids) == 1 else 'entries'}. Undo is available.", saved_ids=ids)
 
         self.run("Saving transactions…", partial(self.ledger.add, items), done)
 
-    def _changed(self, status: str) -> None:
+    def _changed(self, status: str, *, saved_ids: list[int] | None = None) -> None:
         def loaded(items):
             self.render(items)
+            if saved_ids:
+                self.highlight_saved(saved_ids)
             self.status.set(status)
             self.export()
 
@@ -653,6 +858,8 @@ def main() -> None:
     data = args.data.expanduser().resolve()
     source = args.import_from.expanduser().resolve()
     report = (args.report or (Path.home() / "Documents" / "Expense Tracker" / "expenses.xlsx")).expanduser().resolve()
+    if os.name == "nt":
+        ctypes.windll.user32.SetProcessDPIAware()
     root = tk.Tk()
     endpoint = urlsplit(settings.ollama_url)
     if endpoint.scheme not in {"http", "https"} or endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
